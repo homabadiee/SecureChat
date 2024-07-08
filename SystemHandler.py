@@ -1,3 +1,4 @@
+import os
 import re
 import bcrypt
 from User import User
@@ -6,10 +7,23 @@ from User import User
 class SystemHandler:
 
     def __init__(self):
-        self.database = 'secret_files/database.txt'
+        self.make_dir('SecretFiles/')
+        self.make_dir('ActiveDirectory/')
+        self.create_users_database()
 
-    def find_user_role(self, user_ID):
-        with open(self.database, 'r') as file:
+
+    def make_dir(self, path):
+        if not os.path.exists(path):
+            os.mkdir(path)
+
+
+    def create_users_database(self):
+        if not os.path.exists('SecretFiles/database.txt'):
+            open('SecretFiles/database.txt', 'w')
+
+    @staticmethod
+    def find_user_role(user_ID):
+        with open('SecretFiles/database.txt', 'r') as file:
             for line in file:
                 parts = line.strip().split(",")
                 email, s_user_ID, salt, hashed_password, role = parts
@@ -23,7 +37,7 @@ class SystemHandler:
 
     def is_username_taken(self, username):
         try:
-            with open(self.database, 'r') as file:
+            with open('SecretFiles/database.txt', 'r') as file:
                 for line in file:
                     stored_username = line.split(",")[1]
                     if stored_username == username:
@@ -57,7 +71,7 @@ class SystemHandler:
         return bcrypt.hashpw(password.encode('utf-8'), salt.encode('utf-8')) == hashed_password.encode('utf-8')
 
     def find_user(self, username, password):
-        with open(self.database, 'r') as file:
+        with open('SecretFiles/database.txt', 'r') as file:
             for line in file:
                 parts = line.strip().split(",")
 
@@ -67,7 +81,7 @@ class SystemHandler:
         return False
 
     def find_group_member(self, group_id, member_name):
-        with open('secret_files/group_id.txt', 'r') as file:
+        with open('SecretFiles/group_id.txt', 'r') as file:
             for line in file:
                 if line.startswith(group_id):
                     members = line.strip().split(',')[1:]
@@ -78,7 +92,7 @@ class SystemHandler:
         lines = []
         user_found = False
 
-        with open(self.database, 'r') as file:
+        with open('SecretFiles/database.txt', 'r') as file:
             for line in file:
                 parts = line.strip().split(",")
 
@@ -89,7 +103,7 @@ class SystemHandler:
                 lines.append(",".join(parts) + "\n")
 
         if user_found:
-            with open(self.database, 'w') as file:
+            with open('SecretFiles/database.txt', 'w') as file:
                 file.writelines(lines)
             return True
 
@@ -111,15 +125,14 @@ class SystemHandler:
         return salt, hashed_password
 
     def store_user_details(self, email, username, salt, hashed_password):
-        with open(self.database, 'a') as file:
+        with open('SecretFiles/database.txt', 'a') as file:
             file.write(f"{email},{username},{salt.decode('utf-8')},{hashed_password.decode('utf-8')},user\n")
         print("User details stored successfully!")
 
-    def register_user(self):
-        email, username, password = self.get_user_details()
+    def register_user(self, email, username, password):
         salt, hashed_password = self.hash_password(password)
         self.store_user_details(email, username, salt, hashed_password)
-        return username
+
 
 
 SystemHandler = SystemHandler()
@@ -221,6 +234,12 @@ def main():
     global choice
     global is_login
 
+    if not SystemHandler.find_user('systemadmin', 'systemadmin'):
+        print('Creating System Admin ...')
+        SystemHandler.register_user('sysadmin@gmail.com', 'systemadmin', 'systemadmin')
+        users['systemadmin'] = User('systemadmin')
+        SystemHandler.grant_superadmin_role('systemadmin')
+
     while True:
         if not is_login:
             print('1. Register')
@@ -229,7 +248,8 @@ def main():
             choice = input('Enter your choice: ')
             try:
                 if choice == '1':  # register
-                    user_ID = SystemHandler.register_user()
+                    email, user_ID, password = SystemHandler.get_user_details()
+                    SystemHandler.register_user(email, user_ID, password)
                     users[user_ID] = User(user_ID)
                     users[user_ID].send_csr()
                 elif choice == '2':  # login

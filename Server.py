@@ -40,53 +40,25 @@ class Server:
                 elif flag == 2:
                     print(f'{group_member} added')
                     self.groups[recipient_id].add_member(group_member)
-                    self.add_group_member(recipient_id, group_member)
-                    shutil.copy('secret_files/' + group_member + '.crt', recipient_id + '/')
+                    Group.add_group_member_file(recipient_id, group_member)
+                    shutil.copy('SecretFiles/' + group_member + '.crt', recipient_id + '/')
                     self.clients[group_member].sendall(eflag + b'||' + sid_and_msg)
                 elif flag == 3 or flag == 5:
                     self.groups[recipient_id].remove_member(group_member)
-                    self.remove_group_member(recipient_id, group_member)
+                    Group.remove_group_member_file(recipient_id, group_member)
                     os.remove(recipient_id + '/' + group_member + '.crt')
                     if flag == 3:
                         self.clients[group_member].sendall(eflag + b'||' + sid_and_msg)
                 elif flag == 4:  # create group
                     self.groups[recipient_id] = Group(group_member, recipient_id)
-                    self.add_group_member(recipient_id, group_member)
+                    Group.add_group_member_file(recipient_id, group_member)
                     print(f'group with id = {recipient_id} with admin = {group_member} created')
+
 
             else:
                 break
         client_socket.close()
 
-    def add_group_member(self, group_id, member_name):
-        with open('secret_files/group_id.txt', 'r') as file:
-            lines = file.readlines()
-        updated_lines = []
-        for line in lines:
-            if line.startswith(group_id):
-                parts = line.strip().split(',')
-                if member_name not in parts[1:]:
-                    parts.append(member_name)
-                line = ','.join(parts) + '\n'
-            updated_lines.append(line)
-
-        with open('secret_files/group_id.txt', 'w') as file:
-            file.writelines(updated_lines)
-
-    def remove_group_member(self, group_id, member_name):
-        with open('secret_files/group_id.txt', 'r') as file:
-            lines = file.readlines()
-        updated_lines = []
-        for line in lines:
-            if line.startswith(group_id):
-                parts = line.strip().split(',')
-                if member_name in parts[1:]:
-                    parts.remove(member_name)
-                line = ','.join(parts) + '\n' if len(parts) > 1 else group_id + '\n'
-            updated_lines.append(line)
-
-        with open('secret_files/group_id.txt', 'w') as file:
-            file.writelines(updated_lines)
 
     def start(self):
         print(f"Server started on {self.host}:{self.port}")

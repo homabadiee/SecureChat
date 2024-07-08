@@ -1,11 +1,5 @@
+from Encryption import Encryption
 import threading
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography import x509
-from cryptography.hazmat.backends import default_backend
-from cryptography.x509.oid import NameOID
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 import socket
 import os
 
@@ -21,12 +15,12 @@ class User:
         self.group_cred = None
         self.group_member = 'None'
         self.msg_flag = None
-
+        
 
         self.init()
         if result:
-            self.private_key = self.generate_private_key()
-            self.generate_csr()
+            self.private_key = Encryption.generate_private_key(self.ID)
+            Encryption.generate_csr(self.ID, self.private_key)
 
     def init(self):
         self.state['inputCondition'] = threading.Condition()
@@ -61,55 +55,6 @@ class User:
     def end_status(self):
         self.state['end'] = True
 
-    def generate_private_key(self):
-        private_key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048,
-            backend=default_backend()
-        )
-
-        with open(self.ID + '/private_key.pem', 'wb') as f:
-            f.write(private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
-            ))
-
-        return private_key
-
-    def generate_csr(self):
-        csr = x509.CertificateSigningRequestBuilder() \
-            .subject_name(x509.Name([
-            x509.NameAttribute(NameOID.COUNTRY_NAME, u'US'),
-            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u'California'),
-            x509.NameAttribute(NameOID.LOCALITY_NAME, u'San Francisco'),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, self.ID),
-            x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, u'IT'),
-            x509.NameAttribute(NameOID.COMMON_NAME, self.ID),
-        ])) \
-            .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(self.ID)]),
-            critical=False,
-        ) \
-            .sign(self.private_key, hashes.SHA256())
-
-        with open(self.ID + '/' + self.ID + '.pem', 'wb') as f:
-            f.write(csr.public_bytes(serialization.Encoding.PEM))
-
-        return csr
-
-    def load_csr(self, csr_path):
-        with open(csr_path, 'rb') as file:
-            csr = file.read()
-            return csr
-
-    def load_certificate(self, file_path):
-        with open(file_path, "rb") as file:
-            cert_data = file.read()
-        certificate = x509.load_der_x509_certificate(cert_data, default_backend())
-        return certificate
-
-
     def create_group(self):
         IP = '127.0.0.1'
         PORT = 5000
@@ -124,10 +69,8 @@ class User:
                            + self.ID.encode('utf-8') + b'||' + self.recipient_ID.encode('utf-8')
                            + b'||' + self.ID.encode('utf-8') + b'||' + msg)
 
-
         client_socket.close()
         self.state['end'] = True
-
 
     def send_csr(self):
         try:
@@ -136,7 +79,7 @@ class User:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_socket.connect((IP, PORT))
             message = '0'.encode('utf-8') + b'||' + self.ID.encode('utf-8')
-            signed_message = self.sign_message(message)
+            signed_message = Encryption.sign_message(Encryption.load_private_key(self.ID), message)
             server_socket.send(signed_message)
             response = server_socket.recv(1024)
             self.CA_response(server_socket, 0, response)
@@ -167,33 +110,27 @@ class User:
                 group_ID = input('Enter Group ID : ')
                 message = str(request).encode('utf-8') + b'||' + self.ID.encode('utf-8') + b'||' + group_ID.encode(
                     'utf-8')
-                # self.state['end'] = True
 
-            signed_message = self.sign_message(message)
+            signed_message = Encryption.sign_message(Encryption.load_private_key(self.ID), message)
             server_socket.send(signed_message)
             response = server_socket.recv(1024)
             self.CA_response(server_socket, request, response)
-            server_socket.close()
 
-            if request == 2:
-                self.create_group()
 
         except Exception as e:
-            print(f"An error occurred: {e}")
-
+            print(f"An error occurred in chat_request: {e}")
 
     def CA_response(self, server_socket, request, response):
         flag = response
         flag = int(flag.decode('utf-8'))
         if flag == 0 and request == 0:  # waiting for CSR
             csr_path = self.ID + '/' + self.ID + '.pem'
-            csr = self.load_csr(csr_path)
+            csr = Encryption.load_csr(csr_path)
             server_socket.send(str(len(csr)).encode('utf-8'))
             server_socket.sendall(csr)
         elif flag == 1 and request == 1:  # success response for private chat request
             server_socket.send(b'ACK')
             cert_path = self.ID + '/' + self.recipient_ID + '.crt'
-            print('ca_response recp = ' + self.recipient_ID)
             cert = server_socket.recv(4096)
             with open(cert_path, 'wb') as file:
                 file.write(cert)
@@ -202,12 +139,13 @@ class User:
             self.group_cred = server_socket.recv(4096)
             cert, gp_info, signature = self.group_cred.rsplit(b'||', 2)
             CA_cert_path = 'ActiveDirectory/CA.crt'
-            CA_cert = self.load_certificate(CA_cert_path)
+            CA_cert = Encryption.load_certificate(CA_cert_path)
             public_key = CA_cert.public_key()
-            self.verify_message_signature(public_key, signature, gp_info)
+            Encryption.verify_message_signature(public_key, signature, gp_info)
             group_ID, port = gp_info.decode('utf-8').split(':', 1)
             self.group_ID_port[group_ID] = port
             self.recipient_ID = group_ID
+            self.create_group()
             print(f'group id = {group_ID} on port = {port}')
 
         elif flag == 2:  # not super admin
@@ -222,82 +160,19 @@ class User:
         elif flag == 5:
             print('Repetitive Group ID')
 
-    def load_private_key(self):
-        with open(self.ID + '/private_key.pem', 'rb') as f:
-            private_key = serialization.load_pem_private_key(f.read(), password=None)
-        return private_key
+        server_socket.close()
 
-    def sign_message(self, message):
-        private_key = self.load_private_key()
-        signature = private_key.sign(
-            message,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
-        )
-        return message + b'||' + signature
+        if flag > 1:
+            self.end_status()
 
-    def verify_message_signature(self, public_key, signature, message):
-        try:
-            public_key.verify(
-                signature,
-                message,
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH
-                ),
-                hashes.SHA256()
-            )
-        except InvalidSignature:
-            print("Signature is invalid")
-
-    def get_public_key(self, cert_path):
-        with open(cert_path, 'rb') as f:
-            cert_data = f.read()
-        cert = x509.load_der_x509_certificate(cert_data)
-        public_key = cert.public_key()
-        return public_key
-
-    def encrypt_message(self, public_key, message):
-        chunk_size = 190
-        encrypted_chunks = []
-        for i in range(0, len(message), chunk_size):
-            chunk = message[i:i + chunk_size]
-            encrypted_chunk = public_key.encrypt(
-                chunk,
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                    algorithm=hashes.SHA256(),
-                    label=None
-                )
-            )
-            encrypted_chunks.append(encrypted_chunk)
-        return b'||'.join(encrypted_chunks)
-
-    def decrypt_message(self, encrypted_message):
-        private_key = self.load_private_key()
-        encrypted_chunks = encrypted_message.split(b'||')
-        decrypted_chunks = []
-        for encrypted_chunk in encrypted_chunks:
-            decrypted_chunk = private_key.decrypt(
-                encrypted_chunk,
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                    algorithm=hashes.SHA256(),
-                    label=None
-                )
-            )
-            decrypted_chunks.append(decrypted_chunk)
-        return b''.join(decrypted_chunks)
 
     def get_message(self):
         while True:
             if self.state['active']:
                 self.state['sendMessageLock'].acquire()
                 self.state['userInput'] = input()
-                print(f"{self.ID} (you) : {self.state['userInput']}")
+                if self.state['userInput'] != '':
+                    print(f"{self.ID} (you) : {self.state['userInput']}")
                 self.state['sendMessageLock'].release()
                 with self.state['inputCondition']:
                     self.state['inputCondition'].notify()
@@ -306,7 +181,7 @@ class User:
                     self.state['stop'] = True
                     break
 
-            if self.state['stop']:  # todo check
+            if self.state['stop']:
                 self.state['userInput'] = None
                 with self.state['inputCondition']:
                     self.state['inputCondition'].notify()
@@ -317,22 +192,25 @@ class User:
             with self.state['inputCondition']:
                 self.state['inputCondition'].wait()
 
-            if self.state['stop'] and self.state['userInput'] != 'end':
+            if self.state['stop'] and self.state['userInput'] != 'end':  # stop threads
                 self.state['stop'] = False
                 client_socket.close()
                 self.state['end'] = True
                 break
 
-            message = self.sign_message(self.state['userInput'].encode('utf-8'))
-            if self.msg_flag == 0:  # private message
-                cert_path = self.ID + '/' + self.recipient_ID + '.crt'
-                public_key = self.get_public_key(cert_path)
-                message = self.encrypt_message(public_key, message)
+            if self.state['userInput'] != '':
+                message = self.state['userInput'].encode('utf-8')
+                message = Encryption.sign_message(Encryption.load_private_key(self.ID), message)
+                if self.msg_flag == 0:  # private message
+                    cert_path = self.ID + '/' + self.recipient_ID + '.crt'
+                    public_key = Encryption.get_public_key(cert_path)
+                    message = Encryption.encrypt_message(public_key, message)
 
-            client_socket.send(str(self.msg_flag).encode('utf-8') + b'||'
-                               + self.group_member.encode('utf-8') + b'||' + self.recipient_ID.encode('utf-8')
-                               + b'||' + self.ID.encode('utf-8') + b'||' + message)
-            if self.state['stop']:
+                client_socket.send(str(self.msg_flag).encode('utf-8') + b'||'
+                                   + self.group_member.encode('utf-8') + b'||' + self.recipient_ID.encode('utf-8')
+                                   + b'||' + self.ID.encode('utf-8') + b'||' + message)
+
+            if self.state['stop']:  # end conversation
                 self.state['stop'] = False
                 client_socket.close()
                 self.state['end'] = True
@@ -340,7 +218,6 @@ class User:
 
     def receive_message(self, client_socket):
         while True:
-
             try:
                 message = client_socket.recv(4096)
             except ConnectionAbortedError:
@@ -352,9 +229,9 @@ class User:
                 if flag == 2:
                     cert, gp_info, signature = en_message.rsplit(b'||', 2)
                     CA_cert_path = 'ActiveDirectory/CA.crt'
-                    CA_cert = self.load_certificate(CA_cert_path)
+                    CA_cert = Encryption.load_certificate(CA_cert_path)
                     public_key = CA_cert.public_key()
-                    self.verify_message_signature(public_key, signature, gp_info)
+                    Encryption.verify_message_signature(public_key, signature, gp_info)
                     group_ID, port = gp_info.decode('utf-8').split(':', 1)
                     self.group_ID_port[group_ID] = port
                     print(f'added to group id = {group_ID} on port = {port}')
@@ -367,6 +244,7 @@ class User:
                     del self.group_ID_port[rem_group_id]
                     self.state['stop'] = True
                     client_socket.close()
+                    print(f'removed from group id = {rem_group_id}')
                     break
                 else:
                     sender_ID = sender_ID.decode('utf-8')
@@ -379,15 +257,15 @@ class User:
                     cert_path = None
                     decrypted_message = None
                     if flag == 0:
-                        decrypted_message = self.decrypt_message(en_message)
+                        decrypted_message = Encryption.decrypt_message(Encryption.load_private_key(self.ID), en_message)
                         cert_path = self.ID + '/' + sender_ID + '.crt'
                     elif flag == 1:
                         decrypted_message = en_message
                         cert_path = self.recipient_ID + '/' + sender_ID + '.crt'
 
                     message, signature = decrypted_message.rsplit(b'||', 1)
-                    public_key = self.get_public_key(cert_path)
-                    self.verify_message_signature(public_key, signature, message)
+                    public_key = Encryption.get_public_key(cert_path)
+                    Encryption.verify_message_signature(public_key, signature, message)
 
                     try:
                         message = message.decode('utf-8')
@@ -407,7 +285,6 @@ class User:
                 self.state['active'] = False
                 client_socket.close()
                 break
-
 
     def listen_server(self, client_socket):
         receive_thread = threading.Thread(target=self.receive_message, args=(client_socket,))
@@ -435,8 +312,7 @@ class User:
             msg = self.group_cred
 
         elif self.msg_flag == 3 or self.msg_flag == 5:
-            msg = 'None'.encode('utf-8')
-
+            msg = self.recipient_ID.encode('utf-8')
 
         IP = '127.0.0.1'
         PORT = 5000
@@ -446,8 +322,8 @@ class User:
         client_socket.recv(3)
 
         client_socket.send(str(self.msg_flag).encode('utf-8') + b'||'
-                       + self.group_member.encode('utf-8') + b'||' + self.recipient_ID.encode('utf-8')
-                       + b'||' + self.ID.encode('utf-8') + b'||' + msg)
+                           + self.group_member.encode('utf-8') + b'||' + self.recipient_ID.encode('utf-8')
+                           + b'||' + self.ID.encode('utf-8') + b'||' + msg)
 
         client_socket.close()
         self.state['end'] = True
